@@ -4,6 +4,9 @@ Court Short Name: La. Ct. App. 4th Cir.
 Author: Luis-manzur
 History:
   2025-04-22: Created by Luis-manzur
+  2026-07-19: Point the search at Search.aspx (the opinion month/year form
+    moved off Default.aspx) and stop the hidden-input copy from clobbering
+    the search postback's __EVENTTARGET.
 """
 
 import re
@@ -24,7 +27,9 @@ class Site(OpinionSiteLinear):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.court_id = self.__module__
-        self.url = "https://www.la4th.org/Default.aspx"
+        # The opinion month/year search lives on Search.aspx; Default.aspx is
+        # now just the homepage and ignores the search postback.
+        self.url = "https://www.la4th.org/Search.aspx"
         self.search_date = datetime.today()
         self.make_backscrape_iterable(kwargs)
         self.status = "Published"
@@ -38,35 +43,57 @@ class Site(OpinionSiteLinear):
         :return None
         """
 
-        # XPath for the opinion results
+        # Each result is a block of labelled paragraphs, e.g.
+        #   <p><strong>2024-KA-0613</strong></p>
+        #   <p><strong>Parties:</strong> STATE OF LOUISIANA
+        #       <span aria-hidden="true">vs.</span>
+        #       <span class="sr-only"> versus </span> KEVIN E. VICKNAIR</p>
+        #   <p><strong>Decree:</strong> ...</p>
+        #   <p><strong>Opinion Date:</strong> 06/01/2026</p>
+        #   <p><strong>Document:</strong> <a href="...pdf">View Opinion (PDF)</a></p>
         opinion_results_xpath = "//div[contains(@class, 'opinion-result')]"
         results = self.html.xpath(opinion_results_xpath)
 
         self.cases = []
         for result in results:
-            docket = result.xpath(".//strong/text()")[0]
-            name = (
-                result.xpath(".//p[not(strong)]/text()")[0]
-                .replace(" VS. .", ".")
-                .strip()
+            # The docket is the block's first (unlabelled) <strong>. A block
+            # with no <strong> is not an opinion row; skip it rather than emit
+            # an empty record.
+            dockets = result.xpath(".//strong/text()")
+            if not dockets:
+                continue
+            docket = dockets[0].strip()
+
+            # The party names live in the "Parties:" paragraph. Take its visible
+            # text nodes only: skip the "Parties:" label <strong> and the
+            # screen-reader <span> that repeats the "vs." separator as "versus".
+            name_parts = result.xpath(
+                ".//p[strong[contains(text(), 'Parties')]]"
+                "//text()[not(parent::strong)]"
+                "[not(parent::span[@class='sr-only'])]"
             )
+            name = " ".join(" ".join(name_parts).split())
+
+            # Decree/Opinion Date/Document are each optional: some listings (e.g.
+            # writ rulings with multiple PDFs) omit the Decree line. Default a
+            # missing field to empty rather than dropping the whole month's page.
             decree = result.xpath(
                 ".//p[strong[contains(text(), 'Decree')]]/text()"
-            )[0]
+            )
             date = result.xpath(
                 ".//p[strong[contains(text(), 'Opinion Date')]]/text()"
-            )[0]
+            )
             download_url = result.xpath(
-                ".//p/a[contains(text(), 'View Document')]/@href"
-            )[0]
+                ".//p[strong[contains(text(), 'Document')]]//a/@href"
+            )
 
             self.cases.append(
                 {
                     "docket": docket,
                     "name": titlecase(name),
-                    "disposition": titlecase(decree),
-                    "date": date,
-                    "url": download_url,
+                    "disposition": titlecase(decree[0]) if decree else "",
+                    "date": date[0].strip() if date else "",
+                    "url": download_url[0] if download_url else "",
                 }
             )
 
@@ -77,18 +104,25 @@ class Site(OpinionSiteLinear):
 
         :return None
         """
-        self.parameters.update(
-            {
-                "ctl00$Main$ddlOpMonth": self.search_date.strftime("%B"),
-                "ctl00$Main$ddlOpYear": self.search_date.strftime("%Y"),
-            }
-        )
-
+        # Carry over the page's ASP.NET tokens (__VIEWSTATE, __EVENTVALIDATION,
+        # __VIEWSTATEGENERATOR, ...) so the postback is accepted.
         for input in self.html.xpath('//input[@type="hidden"][@name]'):
             name = input.get("name")
             value = input.get("value", "")
 
             self.parameters[name] = value
+
+        # Re-assert the search postback AFTER copying hidden inputs: Search.aspx
+        # ships an empty __EVENTTARGET/__EVENTARGUMENT hidden pair that would
+        # otherwise clobber the month/year search target set in __init__.
+        self.parameters.update(
+            {
+                "__EVENTTARGET": "ctl00$Main$btnOpMonthYearSearch",
+                "__EVENTARGUMENT": "",
+                "ctl00$Main$ddlOpMonth": self.search_date.strftime("%B"),
+                "ctl00$Main$ddlOpYear": self.search_date.strftime("%Y"),
+            }
+        )
 
     async def _download_backwards(self, search_date: date) -> None:
         """Download and process HTML for a given target date.

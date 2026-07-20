@@ -1,3 +1,14 @@
+"""Scraper for Louisiana Court of Appeal, Fifth Circuit
+CourtID: lactapp_5
+Court Short Name: La. Ct. App. 5th Cir.
+History:
+  2026-07-19: The opinion search grew a Google reCAPTCHA; a token-less
+    backscrape now returns zero records for every month. `_process_html` raises
+    when it sees the reCAPTCHA so callers surface a miss instead of an empty
+    court. Live month/year backscrape is blocked until a solved token is
+    supplied.
+"""
+
 import re
 from datetime import date, datetime
 
@@ -51,6 +62,21 @@ class Site(OpinionSiteLinear):
             self.update_date_filters()
             self.update_hidden_inputs()
             self.html = await self._download()
+
+            # fifthcircuit.org now gates the opinion search behind a Google
+            # reCAPTCHA. Without a solved token the server returns "There were
+            # no records returned based on your criteria." for EVERY month, so a
+            # backscrape silently looks like an empty court. Fail loudly instead
+            # of reporting zero opinions (the site's own fixture shows Oct 2024
+            # had 25). Callers must surface this as a miss, not an empty page.
+            if self.html.xpath(
+                "//*[@data-sitekey] | //*[contains(@class, 'g-recaptcha')]"
+            ):
+                raise RuntimeError(
+                    "fifthcircuit.org opinion search is gated by a Google "
+                    "reCAPTCHA; automated month/year backscrape returns no "
+                    "records without a solved token."
+                )
 
         count_xpath = "//*[@id='cntBody_ctlOpinionSearch_Toggle_lblRecordCnt']"
         logger.info(self.html.xpath(count_xpath)[0].text_content().strip())
