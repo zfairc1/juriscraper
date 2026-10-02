@@ -7,6 +7,8 @@ History:
   2026-07-19: Point the search at Search.aspx (the opinion month/year form
     moved off Default.aspx) and stop the hidden-input copy from clobbering
     the search postback's __EVENTTARGET.
+  2026-10-01: Read the date from "Decision Date:" too; writ dispositions
+    no longer carry an "Opinion Date:" line.
 """
 
 import re
@@ -80,8 +82,11 @@ class Site(OpinionSiteLinear):
             decree = result.xpath(
                 ".//p[strong[contains(text(), 'Decree')]]/text()"
             )
+            # Opinions carry "Opinion Date:"; writ dispositions carry
+            # "Decision Date:" instead (seen from September 2026).
             date = result.xpath(
-                ".//p[strong[contains(text(), 'Opinion Date')]]/text()"
+                ".//p[strong[contains(text(), 'Opinion Date')"
+                " or contains(text(), 'Decision Date')]]/text()"
             )
             download_url = result.xpath(
                 ".//p[strong[contains(text(), 'Document')]]//a/@href"
